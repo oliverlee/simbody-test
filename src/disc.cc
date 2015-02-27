@@ -17,7 +17,7 @@ namespace {
                 MobilizedBody& planeMobod,
                 MobilizedBody& discMobod,
                 Real discRadius) :
-            Implementation(planeMobod.updMatterSubsystem(), 1, 0, 0),
+            Implementation(planeMobod.updMatterSubsystem(), 1, 2, 0),
             m_radius(discRadius) {
                 m_plane_F = addConstrainedBody(planeMobod);
                 m_disc_B = addConstrainedBody(discMobod);
@@ -31,7 +31,7 @@ namespace {
 
         // Simbody supplies position information in argument list; we calculate
         // the constraint error that represents here.
-        void calcPositionErrors
+        virtual void calcPositionErrors
            (const State&                                    state,
             const Array_<Transform,ConstrainedBodyIndex>&   allX_AB,
             const Array_<Real,     ConstrainedQIndex>&      constrainedQ,
@@ -54,7 +54,7 @@ namespace {
 
         // Simbody supplies velocity information in argument list; position info
         // is in the state. Return time derivative of position constraint error.
-        void calcPositionDotErrors
+        virtual void calcPositionDotErrors
            (const State&                                    state,
             const Array_<SpatialVec,ConstrainedBodyIndex>&  allV_AB,
             const Array_<Real,      ConstrainedQIndex>&     constrainedQDot,
@@ -84,7 +84,7 @@ namespace {
         // Simbody supplies acceleration information in argument list; position and
         // velocity info is in the state. Return second time derivative of position
         // constraint error.
-        void calcPositionDotDotErrors
+        virtual void calcPositionDotDotErrors
            (const State&                                    state,
             const Array_<SpatialVec,ConstrainedBodyIndex>&  allA_AB,
             const Array_<Real,      ConstrainedQIndex>&     constrainedQDotDot,
@@ -123,7 +123,7 @@ namespace {
         // Simbody provides calculated constraint multiplier in argument list; we
         // turn that into forces here and apply them to the two bodies at the
         // contact points
-        void addInPositionConstraintForces
+        virtual void addInPositionConstraintForces
            (const State&                                state,
             const Array_<Real>&                         multipliers,
             Array_<SpatialVec,ConstrainedBodyIndex>&    bodyForcesInA,
@@ -131,11 +131,12 @@ namespace {
         {
             const Transform& X_AF = getBodyTransformFromState(state, m_plane_F);
             const Transform& X_AB = getBodyTransformFromState(state, m_disc_B);
+
             const UnitVec3& Pz_A = X_AF.z(); // m_plane_F normal direction (down) in A
             const UnitVec3& Dy_A = X_AB.y(); // m_disc_B direction in A
             const UnitVec3 n_A((Dy_A % Pz_A) % Dy_A);
-
             const Vec3 p_BC_A = m_radius * n_A;
+
             const Vec3 p_FC_A = p_BC_A + X_AB.p() - X_AF.p();
 
             const Vec3 p_BC_B = X_AB.RInv() * p_BC_A;
@@ -147,10 +148,106 @@ namespace {
             addInStationForce(state, m_plane_F, p_FC_F, -force_A, bodyForcesInA);
         }
 
+
+        // Implementation of virtuals required for nonholonomic constraints.
+        virtual void calcVelocityErrors
+           (const State&                                    state, // Stage::Position
+            const Array_<SpatialVec,ConstrainedBodyIndex>&  allV_AB,
+            const Array_<Real,      ConstrainedUIndex>&     constrainedU,
+            Array_<Real>&                                   verr) const
+        {
+            const Transform& X_AF = getBodyTransformFromState(state, m_plane_F);
+            const Transform& X_AB = getBodyTransformFromState(state, m_disc_B);
+            const Vec3& p_AF = X_AF.p();
+            const Vec3& w_AF = getBodyAngularVelocity(allV_AB, m_plane_F);
+            const Vec3& v_AF = getBodyOriginVelocity(allV_AB, m_plane_F);
+
+            const UnitVec3& Pz_A = X_AF.z(); // m_plane_F normal direction (down) in A
+            const UnitVec3& Dy_A = X_AB.y(); // m_disc_B direction in A
+            const UnitVec3 n_A((Dy_A % Pz_A) % Dy_A);
+            const Vec3 p_BC_B = X_AB.RInv() * m_radius * n_A;
+
+            const Vec3 p_AC = findStationLocationFromState(state, m_disc_B, p_BC_B);
+            const Vec3 v_AC = findStationVelocity(state, allV_AB, m_disc_B, p_BC_B);
+
+            const Vec3 p_FC_A = p_AC - p_AF;
+            const Vec3 p_FC_A_dot = v_AC - v_AF;
+            const Vec3 v_FC_A = p_FC_A_dot - w_AF % p_FC_A;
+
+            verr[0] = ~X_AF.x() * v_FC_A; // x-component
+            verr[1] = ~X_AF.y() * v_FC_A; // y-component
+        }
+
+        virtual void calcVelocityDotErrors
+           (const State&                                    state, // Stage::Velocity
+            const Array_<SpatialVec,ConstrainedBodyIndex>&  allA_AB,
+            const Array_<Real,      ConstrainedUIndex>&     constrainedUDot,
+            Array_<Real>&                                   vaerr) const
+        {
+            const Transform& X_AF = getBodyTransformFromState(state, m_plane_F);
+            const Transform& X_AB = getBodyTransformFromState(state, m_disc_B);
+            const Vec3& p_AF = X_AF.p();
+            const Vec3& w_AF = getBodyAngularVelocityFromState(state, m_plane_F);
+            const Vec3& v_AF = getBodyOriginVelocityFromState(state, m_plane_F);
+            const Vec3& b_AF = getBodyAngularAcceleration(allA_AB, m_plane_F);
+            const Vec3& a_AF = getBodyOriginAcceleration(allA_AB, m_plane_F);
+
+            const UnitVec3& Pz_A = X_AF.z(); // m_plane_F normal direction (down) in A
+            const UnitVec3& Dy_A = X_AB.y(); // m_disc_B direction in A
+            const UnitVec3 n_A((Dy_A % Pz_A) % Dy_A);
+            const Vec3 p_BC_B = X_AB.RInv() * m_radius * n_A;
+
+            const Vec3 p_AC = findStationLocationFromState(state, m_disc_B, p_BC_B);
+            const Vec3 v_AC = findStationVelocityFromState(state, m_disc_B, p_BC_B);
+            const Vec3 a_AC = findStationAcceleration(state, allA_AB, m_disc_B, p_BC_B);
+
+            const Vec3 p_FC_A = p_AC - p_AF;
+            const Vec3 p_FC_A_dot = v_AC - v_AF;
+            const Vec3 p_FC_A_dotdot = a_AC - a_AF;
+
+            const Vec3 v_FC_A = p_FC_A_dot - w_AF % p_FC_A;
+            const Vec3 v_FC_A_dot = p_FC_A_dotdot -
+                (b_AF % p_FC_A + w_AF % p_FC_A_dot);
+
+            const Vec3 a_FC_A = v_FC_A_dot - w_AF % v_FC_A;
+
+            vaerr[0] = ~X_AF.x() * a_FC_A; // x-component
+            vaerr[1] = ~X_AF.y() * a_FC_A; // y-component
+        }
+
+        virtual void addInVelocityConstraintForces
+           (const State&                                    state, // Stage::Velocity
+            const Array_<Real>&                             multipliers, // mv of these
+            Array_<SpatialVec,ConstrainedBodyIndex>&        bodyForcesInA,
+            Array_<Real,      ConstrainedUIndex>&           mobilityForces) const
+        {
+            const Real lambda0 = multipliers[0];
+            const Real lambda1 = multipliers[1];
+
+            const Transform& X_AF = getBodyTransformFromState(state, m_plane_F);
+            const Transform& X_AB = getBodyTransformFromState(state, m_disc_B);
+            const Vec3& p_AF = X_AF.p();
+            const Vec3& p_AB = X_AB.p();
+
+            const UnitVec3& Pz_A = X_AF.z(); // m_plane_F normal direction (down) in A
+            const UnitVec3& Dy_A = X_AB.y(); // m_disc_B direction in A
+            const UnitVec3 n_A((Dy_A % Pz_A) % Dy_A);
+            const Vec3 p_BC_B = X_AB.RInv() * m_radius * n_A;
+
+            const Vec3 p_AC = findStationLocationFromState(state, m_disc_B, p_BC_B);
+            const Vec3 p_FC_A = p_AC - p_AF;
+            const Vec3 p_FC_F = X_AF.RInv() * p_FC_A;
+
+            const Vec3 force_A = lambda0*X_AF.x() + lambda1*X_AF.y();
+            addInStationForce(state, m_disc_B, p_BC_B,  force_A, bodyForcesInA);
+            addInStationForce(state, m_plane_F, p_FC_F, -force_A, bodyForcesInA);
+        }
+
+
     private:
         ConstrainedBodyIndex m_plane_F;
         ConstrainedBodyIndex m_disc_B;
-        Real m_radius;
+        const Real m_radius;
     };
 } // namespace
 
@@ -187,16 +284,16 @@ int main() {
 
         system.addEventReporter(new Visualizer::Reporter(viz, 0.01));
 
-        disc1.setDefaultRotation(Rotation(Pi/4, YAxis));
+        disc1.setDefaultRotation(Rotation(Pi/6, YAxis));
         system.realizeTopology();
         State state = system.getDefaultState();
-        disc1.setU(state, Vec6(1, 0, 5, 0, 0, 0));
+        disc1.setU(state, Vec6(0, 10, 0, 0, 0, 0));
         //disc2.setU(state, Vec6(-1, 5, 0, 0, 0, 0));
 
         RungeKuttaMersonIntegrator integ(system);
         TimeStepper ts(system, integ);
         ts.initialize(state);
-        ts.stepTo(10.0);
+        ts.stepTo(50.0);
     } catch (const std::exception& e) {
         std::cout << "Error: " << e.what() << std::endl;
         return EXIT_FAILURE;
