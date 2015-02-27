@@ -12,6 +12,11 @@ namespace {
         PositionInfo() : p_AC(NaN), p_BC(NaN), p_FC(NaN) {}
         Vec3 p_AC, p_BC, p_FC; // vectors in ancestor frame
     };
+    class VelocityInfo {
+    public:
+        VelocityInfo() : v_AC(NaN), v_FC(NaN), p_FC_dot(NaN) {}
+        Vec3 v_AC, v_FC, p_FC_dot; // vectors in ancestor frame
+    };
 
     class ConstraintRollingDisc: public Constraint::Custom::Implementation {
     public:
@@ -76,10 +81,9 @@ namespace {
             const UnitVec3& Pz_A = X_AF.z(); // m_plane_F normal direction (down) in A
 
             const Vec3& p_BC_A = getPositionInfo(state).p_BC;
-            const Vec3 p_BC_B = X_AB.RInv() * p_BC_A;
 
             const Vec3& p_AC = getPositionInfo(state).p_AC;
-            const Vec3 v_AC = findStationVelocity(state, allV_AB, m_disc_B, p_BC_B);
+            const Vec3 v_AC = findStationInAVelocity(state, allV_AB, m_disc_B, p_BC_A);
 
             const Vec3& p_FC_A = getPositionInfo(state).p_FC;
             const Vec3 p_FC_A_dot = v_AC - v_AF;
@@ -108,17 +112,16 @@ namespace {
             const UnitVec3& Pz_A = X_AF.z(); // m_plane_F normal direction (down) in A
 
             const Vec3& p_BC_A = getPositionInfo(state).p_BC;
-            const Vec3 p_BC_B = X_AB.RInv() * p_BC_A;
 
             const Vec3& p_AC = getPositionInfo(state).p_AC;
-            const Vec3 v_AC = findStationVelocityFromState(state, m_disc_B, p_BC_B);
-            const Vec3 a_AC = findStationAcceleration(state, allA_AB, m_disc_B, p_BC_B);
+            const Vec3& v_AC = getVelocityInfo(state).v_AC;
+            const Vec3 a_AC = findStationInAAcceleration(state, allA_AB, m_disc_B, p_BC_A);
 
             const Vec3& p_FC_A = getPositionInfo(state).p_FC;
-            const Vec3 p_FC_A_dot = v_AC - v_AF;
+            const Vec3& p_FC_A_dot = getVelocityInfo(state).p_FC_dot;
             const Vec3 p_FC_A_dotdot = a_AC - a_AF;
 
-            const Vec3 v_FC_A = p_FC_A_dot - w_AF % p_FC_A;
+            const Vec3& v_FC_A = getVelocityInfo(state).v_FC;
             const Vec3 v_FC_A_dot = p_FC_A_dotdot -
                 (b_AF % p_FC_A + w_AF % p_FC_A_dot);
 
@@ -137,7 +140,6 @@ namespace {
             Array_<Real,      ConstrainedQIndex>&       qForces) const
         {
             const Transform& X_AF = getBodyTransformFromState(state, m_plane_F);
-            const Transform& X_AB = getBodyTransformFromState(state, m_disc_B);
             const UnitVec3& Pz_A = X_AF.z(); // m_plane_F normal direction (down) in A
 
             const Vec3& p_BC_A = getPositionInfo(state).p_BC;
@@ -164,10 +166,9 @@ namespace {
             const Vec3& v_AF = getBodyOriginVelocity(allV_AB, m_plane_F);
 
             const Vec3& p_BC_A = getPositionInfo(state).p_BC;
-            const Vec3 p_BC_B = X_AB.RInv() * p_BC_A;
 
             const Vec3& p_AC = getPositionInfo(state).p_AC;
-            const Vec3 v_AC = findStationVelocity(state, allV_AB, m_disc_B, p_BC_B);
+            const Vec3 v_AC = findStationInAVelocity(state, allV_AB, m_disc_B, p_BC_A);
 
             const Vec3& p_FC_A = getPositionInfo(state).p_FC;
             const Vec3 p_FC_A_dot = v_AC - v_AF;
@@ -192,17 +193,16 @@ namespace {
             const Vec3& a_AF = getBodyOriginAcceleration(allA_AB, m_plane_F);
 
             const Vec3& p_BC_A = getPositionInfo(state).p_BC;
-            const Vec3 p_BC_B = X_AB.RInv() * p_BC_A;
 
             const Vec3& p_AC = getPositionInfo(state).p_AC;
-            const Vec3 v_AC = findStationVelocityFromState(state, m_disc_B, p_BC_B);
-            const Vec3 a_AC = findStationAcceleration(state, allA_AB, m_disc_B, p_BC_B);
+            const Vec3& v_AC = getVelocityInfo(state).v_AC;
+            const Vec3 a_AC = findStationInAAcceleration(state, allA_AB, m_disc_B, p_BC_A);
 
             const Vec3& p_FC_A = getPositionInfo(state).p_FC;
-            const Vec3 p_FC_A_dot = v_AC - v_AF;
+            const Vec3 p_FC_A_dot = getVelocityInfo(state).p_FC_dot;
             const Vec3 p_FC_A_dotdot = a_AC - a_AF;
 
-            const Vec3 v_FC_A = p_FC_A_dot - w_AF % p_FC_A;
+            const Vec3 v_FC_A = getVelocityInfo(state).v_FC;
             const Vec3 v_FC_A_dot = p_FC_A_dotdot -
                 (b_AF % p_FC_A + w_AF % p_FC_A_dot);
 
@@ -236,10 +236,16 @@ namespace {
            auto mThis = const_cast<ConstraintRollingDisc*>(this);
            mThis->m_positionIndex = state.allocateCacheEntry(
                m_matterIndex, Stage::Position, new Value<PositionInfo>());
+           mThis->m_velocityIndex = state.allocateCacheEntry(
+               m_matterIndex, Stage::Velocity, new Value<VelocityInfo>());
         }
 
         virtual void realizePosition(const State& state) const {
             realizePositionInfo(state);
+        }
+
+        virtual void realizeVelocity(const State& state) const {
+            realizeVelocityInfo(state);
         }
 
 
@@ -248,7 +254,6 @@ namespace {
             if (state.isCacheValueRealized(m_matterIndex, m_positionIndex)) {
                 return;
             }
-
             const Transform& X_AF = getBodyTransformFromState(state, m_plane_F);
             const Transform& X_AB = getBodyTransformFromState(state, m_disc_B);
             const UnitVec3& Pz_A = X_AF.z(); // plane normal direction (down) in A
@@ -271,11 +276,63 @@ namespace {
                     state.updCacheEntry(m_matterIndex, m_positionIndex));
         }
 
+        void realizeVelocityInfo(const State& state) const {
+            if (state.isCacheValueRealized(m_matterIndex, m_velocityIndex)) {
+                return;
+            }
+            const Vec3& w_AF = getBodyAngularVelocityFromState(state, m_plane_F);
+            const Vec3& v_AF = getBodyOriginVelocityFromState(state, m_plane_F);
+            const Vec3& w_AB = getBodyAngularVelocityFromState(state, m_disc_B);
+            const Vec3& v_AB = getBodyOriginVelocityFromState(state, m_disc_B);
+            const PositionInfo& pos = getPositionInfo(state);
+
+            const Vec3 p_BC_dot = w_AB % pos.p_BC;
+
+            VelocityInfo& vel = updVelocityInfo(state);
+            vel.v_AC = v_AB + p_BC_dot;
+            vel.p_FC_dot = vel.v_AC - v_AF;
+            vel.v_FC = vel.p_FC_dot - w_AF % pos.p_FC;
+
+            state.markCacheValueRealized(m_matterIndex, m_velocityIndex);
+        }
+        const VelocityInfo& getVelocityInfo(const State& state) const {
+            return Value<VelocityInfo>::downcast(
+                state.getCacheEntry(m_matterIndex, m_velocityIndex));
+        }
+        VelocityInfo& updVelocityInfo(const State& state) const {
+            return Value<VelocityInfo>::updDowncast(
+                    state.updCacheEntry(m_matterIndex, m_velocityIndex));
+        }
+
+        Vec3 findStationInAVelocity
+           (const State& state,
+            const Array_<SpatialVec, ConstrainedBodyIndex>& allV_AB,
+            ConstrainedBodyIndex B,
+            const Vec3& p_BS_A) const {
+            const Vec3& w_AB = getBodyAngularVelocity(allV_AB, B);
+            const Vec3& v_AB = getBodyOriginVelocity(allV_AB, B);
+
+            return v_AB + w_AB % p_BS_A;
+        }
+
+        Vec3 findStationInAAcceleration
+           (const State& state,
+            const Array_<SpatialVec, ConstrainedBodyIndex>& allA_AB,
+            ConstrainedBodyIndex B,
+            const Vec3& p_BS_A) const {
+            const Vec3& w_AB = getBodyAngularVelocityFromState(state, B);
+            const Vec3& b_AB = getBodyAngularAcceleration(allA_AB, B);
+            const Vec3& a_AB = getBodyOriginAcceleration(allA_AB, B);
+
+            return a_AB + (b_AB % p_BS_A) + w_AB % (w_AB % p_BS_A);
+        }
+
         const SubsystemIndex m_matterIndex;
         ConstrainedBodyIndex m_plane_F;
         ConstrainedBodyIndex m_disc_B;
         const Real m_radius;
         CacheEntryIndex m_positionIndex;
+        CacheEntryIndex m_velocityIndex;
     };
 } // namespace
 
